@@ -159,16 +159,13 @@ const State = struct {
                         in_brackets = true;
                     }
                     if (captures) |cap| {
+                        // Update existing or append new capture if below limit
                         if (capture_index < cap.items.len) {
                             cap.items[capture_index] = .{ .start = self.path_index, .end = self.path_index };
-                        } else {
-                            // Safety check to prevent excessive captures in brace handling
-                            if (cap.items.len >= MAX_CAPTURES) {
-                                // Skip appending but still increment the index
-                            } else {
-                                cap.append(.{ .start = self.path_index, .end = self.path_index }) catch {};
-                            }
+                        } else if (cap.items.len < MAX_CAPTURES) {
+                            cap.append(.{ .start = self.path_index, .end = self.path_index }) catch {};
                         }
+                        // Always increment index, even if we skipped appending due to capture limit
                         capture_index += 1;
                     }
                     if (c == '*') {
@@ -384,279 +381,40 @@ fn globMatchInternal(glob: []const u8, path: []const u8, captures: ?*std.ArrayLi
             const c = glob[state.glob_index];
             switch (c) {
                 '*' => {
-                    const is_globstar = state.glob_index + 1 < glob.len and glob[state.glob_index + 1] == '*';
-                    if (is_globstar) {
-                        // Coalesce multiple ** segments into one
-                        state.glob_index = skipGlobstars(glob, state.glob_index + 2) - 2;
+                    if (!handleAsterisk(&state, glob, path, captures, &brace_stack)) {
+                        return false;
                     }
-
-                    // If we're on a different glob index than before, start a new capture
-                    // Otherwise, extend the active one
-                    if (captures) |capture_list| {
-                        if (capture_list.items.len == 0 or state.glob_index != state.wildcard.glob_index) {
-                            state.wildcard.capture_index = state.capture_index;
-                            state.beginCapture(captures, .{ .start = state.path_index, .end = state.path_index });
-                        } else {
-                            state.extendCapture(captures);
-                        }
-                    }
-
-                    state.wildcard.glob_index = state.glob_index;
-                    // Advance by the length of the UTF-8 codepoint if in bounds
-                    state.wildcard.path_index = if (state.path_index < path.len)
-                        state.path_index + Utf8.codepointLen(path[state.path_index])
-                    else
-                        state.path_index + 1;
-
-                    // ** allows path separators, whereas * does not
-                    // However, ** must be a full path component, i.e., a/**/b not a**b
-                    if (is_globstar) {
-                        state.glob_index += 2;
-
-                        if (glob.len == state.glob_index) {
-                            // A trailing ** segment without a following separator
-                            state.globstar = state.wildcard;
-                        } else if ((state.glob_index < 3 or glob[state.glob_index - 3] == '/') and
-                            glob[state.glob_index] == '/')
-                        {
-                            // Matched a full /**/ segment
-                            if (state.path_index == 0 or
-                                (state.path_index < path.len and isSeparator(path[state.path_index - 1])))
-                            {
-                                state.endCapture(captures);
-                                state.glob_index += 1;
-                            }
-
-                            state.globstar = state.wildcard;
-                        }
-                    } else {
-                        state.glob_index += 1;
-                    }
-
-                    // If we are in a * segment and hit a separator,
-                    // either jump back to a previous ** or end the wildcard
-                    if (state.globstar.path_index != state.wildcard.path_index and
-                        state.path_index < path.len and isSeparator(path[state.path_index]))
-                    {
-                        // Special case: don't jump back for a / at the end of the glob
-                        if (state.globstar.path_index > 0 and state.path_index + 1 < path.len) {
-                            state.glob_index = state.globstar.glob_index;
-                            state.capture_index = state.globstar.capture_index;
-                            state.wildcard.glob_index = state.globstar.glob_index;
-                            state.wildcard.capture_index = state.globstar.capture_index;
-                        } else {
-                            state.wildcard.path_index = 0;
-                        }
-                    }
-
-                    // If the next char is a special brace separator,
-                    // skip to the end of the braces so we don't try to match it
-                    if (brace_stack.length > 0 and state.glob_index < glob.len and
-                        (glob[state.glob_index] == ',' or glob[state.glob_index] == '}'))
-                    {
-                        if (state.skipBraces(glob, captures, false) == .Invalid) {
-                            // Invalid pattern!
-                            return false;
-                        }
-                    }
-
                     continue;
                 },
                 '?' => {
-                    if (state.path_index < path.len) {
-                        if (!isSeparator(path[state.path_index])) {
-                            state.addCharCapture(captures, path);
-                            state.glob_index += 1;
-                            state.path_index += Utf8.codepointLen(path[state.path_index]);
-                            continue;
-                        }
+                    if (handleQuestionMark(&state, path, captures)) {
+                        continue;
                     }
                 },
                 '[' => {
-                    if (state.path_index < path.len) {
-                        state.glob_index += 1;
-
-                        const path_char_len = Utf8.codepointLen(path[state.path_index]);
-                        const path_char_slice = path[state.path_index..][0..path_char_len];
-                        const path_codepoint = Utf8.decode(path_char_slice);
-
-                        var char_class_negated = false;
-                        if (state.glob_index < glob.len and (glob[state.glob_index] == '^' or glob[state.glob_index] == '!')) {
-                            char_class_negated = true;
-                            state.glob_index += 1;
-                        }
-
-                        var first = true;
-                        var is_match = false;
-                        while (state.glob_index < glob.len and (first or glob[state.glob_index] != ']')) {
-                            const low_len = Utf8.codepointLen(glob[state.glob_index]);
-                            var low_slice = glob[state.glob_index..][0..low_len];
-                            var low_index = state.glob_index;
-                            var low_escaped = false;
-
-                            // Handle escapes
-                            if (low_slice.len == 1 and low_slice[0] == '\\') {
-                                if (low_index + 1 >= glob.len) {
-                                    // Invalid pattern!
-                                    return false;
-                                }
-                                low_index += 1;
-                                const escaped_len = Utf8.codepointLen(glob[low_index]);
-                                low_slice = glob[low_index..][0..escaped_len];
-                                low_escaped = true;
-                            }
-
-                            const low_codepoint = Utf8.decode(low_slice);
-                            state.glob_index += low_len;
-                            if (low_escaped) {
-                                state.glob_index += low_slice.len;
-                            }
-
-                            // If there is a - and the following character is not ], read the range end character
-                            const high_codepoint = if (state.glob_index + 1 < glob.len and
-                                glob[state.glob_index] == '-' and
-                                glob[state.glob_index + 1] != ']')
-                            blk: {
-                                state.glob_index += 1;
-
-                                // Get high codepoint
-                                const high_len = Utf8.codepointLen(glob[state.glob_index]);
-                                var high_slice = glob[state.glob_index..][0..high_len];
-                                var high_index = state.glob_index;
-                                var high_escaped = false;
-
-                                // Handle escapes
-                                if (high_slice.len == 1 and high_slice[0] == '\\') {
-                                    if (high_index + 1 >= glob.len) {
-                                        // Invalid pattern!
-                                        return false;
-                                    }
-                                    high_index += 1;
-                                    const escaped_len = Utf8.codepointLen(glob[high_index]);
-                                    high_slice = glob[high_index..][0..escaped_len];
-                                    high_escaped = true;
-                                }
-
-                                const high_codepoint = Utf8.decode(high_slice);
-                                state.glob_index += high_len;
-                                if (high_escaped) {
-                                    state.glob_index += high_slice.len;
-                                }
-
-                                break :blk high_codepoint;
-                            } else low_codepoint;
-
-                            if (low_codepoint <= path_codepoint and path_codepoint <= high_codepoint) {
-                                is_match = true;
-                            }
-                            first = false;
-                        }
-
-                        if (state.glob_index >= glob.len) {
-                            // Invalid pattern!
-                            return false;
-                        }
-
-                        state.glob_index += 1;
-                        if (is_match != char_class_negated) {
-                            state.addCharCapture(captures, path);
-                            state.path_index += path_char_len;
-                            continue;
-                        }
+                    if (handleCharacterClass(&state, glob, path, captures)) {
+                        continue;
                     }
                 },
                 '{' => {
-                    if (state.path_index < path.len) {
-                        if (brace_stack.length >= brace_stack.stack.len) {
-                            // Invalid pattern! Too many nested braces.
-                            return false;
-                        }
-
-                        state.endCapture(captures);
-                        state.beginCapture(captures, .{ .start = state.path_index, .end = state.path_index });
-                        state = brace_stack.push(&state);
+                    if (handleOpenBrace(&state, path, captures, &brace_stack)) {
                         continue;
                     }
                 },
                 '}' => {
-                    if (brace_stack.length > 0) {
-                        // If we hit the end of the braces, we matched the last option
-                        if (state.path_index > brace_stack.longest_brace_match) {
-                            brace_stack.longest_brace_match = state.path_index;
-                        }
-                        state.glob_index += 1;
-                        state = brace_stack.pop(&state, captures);
+                    if (handleCloseBrace(&state, captures, &brace_stack)) {
                         continue;
                     }
                 },
                 ',' => {
-                    if (brace_stack.length > 0) {
-                        // If we hit a comma, we matched one of the options
-                        // still need to check the others in case there is a longer match.
-                        if (state.path_index > brace_stack.longest_brace_match) {
-                            brace_stack.longest_brace_match = state.path_index;
-                        }
-                        state.path_index = brace_stack.last().path_index;
-                        state.glob_index += 1;
-                        state.wildcard = Wildcard.init();
-                        state.globstar = Wildcard.init();
+                    if (handleComma(&state, &brace_stack)) {
                         continue;
                     }
                 },
                 else => {
-                    if (state.path_index < path.len) {
-                        var current_char = c;
-                        // Match escaped characters as literals
-                        if (!unescape(&current_char, glob, &state.glob_index)) {
-                            // Invalid pattern!
-                            return false;
-                        }
-
-                        // Handle UTF-8 matching
-                        var is_match = false;
-                        var path_char_len: usize = 1;
-
-                        if (current_char == '/') {
-                            is_match = isSeparator(path[state.path_index]);
-                        } else {
-                            // Single byte ASCII character
-                            if (path[state.path_index] == current_char) {
-                                is_match = true;
-                                path_char_len = 1;
-                            } else {
-                                // For UTF-8 characters, compare codepoints
-                                path_char_len = Utf8.codepointLen(path[state.path_index]);
-                                if (state.path_index + path_char_len <= path.len) {
-                                    const path_codepoint = Utf8.decode(path[state.path_index..][0..path_char_len]);
-                                    if (current_char < 128) {
-                                        is_match = path_codepoint == current_char;
-                                    } else {
-                                        const glob_char_len = Utf8.codepointLen(current_char);
-                                        if (state.glob_index > 0 and state.glob_index - 1 + glob_char_len <= glob.len) {
-                                            const glob_slice = glob[state.glob_index - 1 ..][0..glob_char_len];
-                                            const glob_codepoint = Utf8.decode(glob_slice);
-                                            is_match = path_codepoint == glob_codepoint;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        if (is_match) {
-                            state.endCapture(captures);
-                            if (brace_stack.length > 0 and state.glob_index > 0 and glob[state.glob_index - 1] == '}') {
-                                brace_stack.longest_brace_match = state.path_index;
-                                state = brace_stack.pop(&state, captures);
-                            }
-                            state.glob_index += 1;
-                            state.path_index += path_char_len;
-
-                            // If this is not a separator, lock in the previous globstar
-                            if (current_char != '/') {
-                                state.globstar.path_index = 0;
-                            }
-                            continue;
-                        }
+                    // Use the refactored helper function for literal character matching
+                    if (handleLiteralCharacter(&state, glob, path, captures, &brace_stack)) {
+                        continue;
                     }
                 },
             }
@@ -685,18 +443,17 @@ fn globMatchInternal(glob: []const u8, path: []const u8, captures: ?*std.ArrayLi
             if (brace_stack.longest_brace_match > 0) {
                 state = brace_stack.pop(&state, captures);
                 continue;
-            } else {
-                // Didn't match. Restore state, and check if we need to jump back to a star pattern.
-                const last = brace_stack.last().*;
-                state = last;
-                brace_stack.length -= 1;
-                if (captures) |c| {
-                    c.resize(state.capture_index) catch {};
-                }
-                if (state.wildcard.path_index > 0 and state.wildcard.path_index <= path.len) {
-                    state.backtrack();
-                    continue;
-                }
+            }
+            // Didn't match. Restore state, and check if we need to jump back to a star pattern.
+            const last = brace_stack.last().*;
+            state = last;
+            brace_stack.length -= 1;
+            if (captures) |c| {
+                c.resize(state.capture_index) catch {};
+            }
+            if (state.wildcard.path_index > 0 and state.wildcard.path_index <= path.len) {
+                state.backtrack();
+                continue;
             }
         }
 
@@ -709,4 +466,364 @@ fn globMatchInternal(glob: []const u8, path: []const u8, captures: ?*std.ArrayLi
     }
 
     return !negated;
+}
+
+/// Handle the ',' pattern character in glob matching
+fn handleComma(
+    state: *State,
+    brace_stack: *BraceStack,
+) bool {
+    if (brace_stack.length > 0) {
+        // If we hit a comma, we matched one of the options
+        // still need to check the others in case there is a longer match.
+        if (state.path_index > brace_stack.longest_brace_match) {
+            brace_stack.longest_brace_match = state.path_index;
+        }
+        state.path_index = brace_stack.last().path_index;
+        state.glob_index += 1;
+        state.wildcard = Wildcard.init();
+        state.globstar = Wildcard.init();
+        return true;
+    }
+    return false;
+}
+
+/// Handle the '*' pattern character in glob matching
+fn handleAsterisk(
+    state: *State,
+    glob: []const u8,
+    path: []const u8,
+    captures: ?*std.ArrayList(Capture),
+    brace_stack: *BraceStack,
+) bool {
+    const is_globstar = state.glob_index + 1 < glob.len and glob[state.glob_index + 1] == '*';
+    if (is_globstar) {
+        // Coalesce multiple ** segments into one
+        state.glob_index = skipGlobstars(glob, state.glob_index + 2) - 2;
+    }
+
+    // If we're on a different glob index than before, start a new capture
+    // Otherwise, extend the active one
+    if (captures) |capture_list| {
+        if (capture_list.items.len == 0 or state.glob_index != state.wildcard.glob_index) {
+            state.wildcard.capture_index = state.capture_index;
+            state.beginCapture(captures, .{ .start = state.path_index, .end = state.path_index });
+        } else {
+            state.extendCapture(captures);
+        }
+    }
+
+    state.wildcard.glob_index = state.glob_index;
+    // Advance by the length of the UTF-8 codepoint if in bounds
+    state.wildcard.path_index = if (state.path_index < path.len)
+        state.path_index + Utf8.codepointLen(path[state.path_index])
+    else
+        state.path_index + 1;
+
+    // ** allows path separators, whereas * does not
+    // However, ** must be a full path component, i.e., a/**/b not a**b
+    if (is_globstar) {
+        state.glob_index += 2;
+
+        if (glob.len == state.glob_index) {
+            // A trailing ** segment without a following separator
+            state.globstar = state.wildcard;
+        } else if ((state.glob_index < 3 or glob[state.glob_index - 3] == '/') and
+            glob[state.glob_index] == '/')
+        {
+            // Matched a full /**/ segment
+            if (state.path_index == 0 or
+                (state.path_index < path.len and isSeparator(path[state.path_index - 1])))
+            {
+                state.endCapture(captures);
+                state.glob_index += 1;
+            }
+
+            state.globstar = state.wildcard;
+        }
+    } else {
+        state.glob_index += 1;
+    }
+
+    // If we are in a * segment and hit a separator,
+    // either jump back to a previous ** or end the wildcard
+    if (state.globstar.path_index != state.wildcard.path_index and
+        state.path_index < path.len and isSeparator(path[state.path_index]))
+    {
+        // Special case: don't jump back for a / at the end of the glob
+        if (state.globstar.path_index > 0 and state.path_index + 1 < path.len) {
+            state.glob_index = state.globstar.glob_index;
+            state.capture_index = state.globstar.capture_index;
+            state.wildcard.glob_index = state.globstar.glob_index;
+            state.wildcard.capture_index = state.globstar.capture_index;
+        } else {
+            state.wildcard.path_index = 0;
+        }
+    }
+
+    // If the next char is a special brace separator,
+    // skip to the end of the braces so we don't try to match it
+    if (brace_stack.length > 0 and state.glob_index < glob.len and
+        (glob[state.glob_index] == ',' or glob[state.glob_index] == '}'))
+    {
+        if (state.skipBraces(glob, captures, false) == .Invalid) {
+            // Invalid pattern!
+            return false;
+        }
+    }
+
+    return true;
+}
+
+/// Handle the '?' pattern character in glob matching
+fn handleQuestionMark(
+    state: *State,
+    path: []const u8,
+    captures: ?*std.ArrayList(Capture),
+) bool {
+    if (state.path_index < path.len) {
+        if (!isSeparator(path[state.path_index])) {
+            state.addCharCapture(captures, path);
+            state.glob_index += 1;
+            state.path_index += Utf8.codepointLen(path[state.path_index]);
+            return true;
+        }
+    }
+    return false;
+}
+
+/// Handle the '[' pattern character (character class) in glob matching
+fn handleCharacterClass(
+    state: *State,
+    glob: []const u8,
+    path: []const u8,
+    captures: ?*std.ArrayList(Capture),
+) bool {
+    if (state.path_index < path.len) {
+        state.glob_index += 1;
+
+        const path_char_len = Utf8.codepointLen(path[state.path_index]);
+        const path_char_slice = path[state.path_index..][0..path_char_len];
+        const path_codepoint = Utf8.decode(path_char_slice);
+
+        var char_class_negated = false;
+        if (state.glob_index < glob.len and (glob[state.glob_index] == '^' or glob[state.glob_index] == '!')) {
+            char_class_negated = true;
+            state.glob_index += 1;
+        }
+
+        var first = true;
+        var is_match = false;
+        while (state.glob_index < glob.len and (first or glob[state.glob_index] != ']')) {
+            const low_len = Utf8.codepointLen(glob[state.glob_index]);
+            var low_slice = glob[state.glob_index..][0..low_len];
+            var low_index = state.glob_index;
+            var low_escaped = false;
+
+            // Handle escapes
+            if (low_slice.len == 1 and low_slice[0] == '\\') {
+                if (low_index + 1 >= glob.len) {
+                    // Invalid pattern!
+                    return false;
+                }
+                low_index += 1;
+                const escaped_len = Utf8.codepointLen(glob[low_index]);
+                low_slice = glob[low_index..][0..escaped_len];
+                low_escaped = true;
+            }
+
+            const low_codepoint = Utf8.decode(low_slice);
+            state.glob_index += low_len;
+            if (low_escaped) {
+                state.glob_index += low_slice.len;
+            }
+
+            // If there is a - and the following character is not ], read the range end character
+            const high_codepoint = if (state.glob_index + 1 < glob.len and
+                glob[state.glob_index] == '-' and
+                glob[state.glob_index + 1] != ']')
+            blk: {
+                state.glob_index += 1;
+
+                // Get high codepoint
+                const high_len = Utf8.codepointLen(glob[state.glob_index]);
+                var high_slice = glob[state.glob_index..][0..high_len];
+                var high_index = state.glob_index;
+                var high_escaped = false;
+
+                // Handle escapes
+                if (high_slice.len == 1 and high_slice[0] == '\\') {
+                    if (high_index + 1 >= glob.len) {
+                        // Invalid pattern!
+                        return false;
+                    }
+                    high_index += 1;
+                    const escaped_len = Utf8.codepointLen(glob[high_index]);
+                    high_slice = glob[high_index..][0..escaped_len];
+                    high_escaped = true;
+                }
+
+                const high_codepoint = Utf8.decode(high_slice);
+                state.glob_index += high_len;
+                if (high_escaped) {
+                    state.glob_index += high_slice.len;
+                }
+
+                break :blk high_codepoint;
+            } else low_codepoint;
+
+            if (low_codepoint <= path_codepoint and path_codepoint <= high_codepoint) {
+                is_match = true;
+            }
+            first = false;
+        }
+
+        if (state.glob_index >= glob.len) {
+            // Invalid pattern!
+            return false;
+        }
+
+        state.glob_index += 1;
+        if (is_match != char_class_negated) {
+            state.addCharCapture(captures, path);
+            state.path_index += path_char_len;
+            return true;
+        }
+    }
+    return false;
+}
+
+/// Handle the '{' pattern character (brace expansion) in glob matching
+inline fn handleOpenBrace(
+    state: *State,
+    path: []const u8,
+    captures: ?*std.ArrayList(Capture),
+    brace_stack: *BraceStack,
+) bool {
+    if (state.path_index < path.len) {
+        if (brace_stack.length >= brace_stack.stack.len) {
+            // Invalid pattern! Too many nested braces.
+            return false;
+        }
+
+        state.endCapture(captures);
+        state.beginCapture(captures, .{ .start = state.path_index, .end = state.path_index });
+        state.* = brace_stack.push(state);
+        return true;
+    }
+    return false;
+}
+
+/// Handle the '}' pattern character (brace expansion) in glob matching
+inline fn handleCloseBrace(
+    state: *State,
+    captures: ?*std.ArrayList(Capture),
+    brace_stack: *BraceStack,
+) bool {
+    if (brace_stack.length > 0) {
+        // If we hit the end of the braces, we matched the last option
+        if (state.path_index > brace_stack.longest_brace_match) {
+            brace_stack.longest_brace_match = state.path_index;
+        }
+        state.glob_index += 1;
+        state.* = brace_stack.pop(state, captures);
+        return true;
+    }
+    return false;
+}
+
+/// Result of a character match operation
+const CharMatchResult = struct {
+    is_match: bool,
+    path_char_len: usize,
+};
+
+/// Handle matching of literal characters in the pattern
+inline fn handleLiteralCharacter(
+    state: *State,
+    glob: []const u8,
+    path: []const u8,
+    captures: ?*std.ArrayList(Capture),
+    brace_stack: *BraceStack,
+) bool {
+    if (state.path_index >= path.len) return false;
+
+    var current_char = glob[state.glob_index];
+    // Match escaped characters as literals
+    if (!unescape(&current_char, glob, &state.glob_index)) {
+        // Invalid pattern!
+        return false;
+    }
+
+    // Compare characters
+    const match_result = matchCharacter(current_char, path, state.path_index, state.glob_index, glob);
+    if (!match_result.is_match) return false;
+
+    // Update state for successful match
+    updateStateAfterMatch(state, captures, brace_stack, glob, match_result.path_char_len);
+    return true;
+}
+
+/// Compare a pattern character with a path character
+fn matchCharacter(
+    glob_char: u8,
+    path: []const u8,
+    path_index: usize,
+    glob_index: usize,
+    glob: []const u8,
+) CharMatchResult {
+    // Handle path separator special case
+    if (glob_char == '/') {
+        return .{ .is_match = isSeparator(path[path_index]), .path_char_len = 1 };
+    }
+
+    // Direct ASCII character match (most common case)
+    if (path[path_index] == glob_char) {
+        return .{ .is_match = true, .path_char_len = 1 };
+    }
+
+    // For UTF-8 characters, compare codepoints
+    const path_char_len = Utf8.codepointLen(path[path_index]);
+    if (path_index + path_char_len > path.len) {
+        return .{ .is_match = false, .path_char_len = 1 };
+    }
+
+    const path_codepoint = Utf8.decode(path[path_index..][0..path_char_len]);
+
+    // ASCII glob char with non-ASCII path char
+    if (glob_char < 128) {
+        return .{ .is_match = path_codepoint == glob_char, .path_char_len = path_char_len };
+    }
+
+    // Both are non-ASCII, need to decode glob char as UTF-8
+    const glob_char_len = Utf8.codepointLen(glob_char);
+    if (glob_index <= 0 or glob_index - 1 + glob_char_len > glob.len) {
+        return .{ .is_match = false, .path_char_len = path_char_len };
+    }
+
+    const glob_slice = glob[glob_index - 1 ..][0..glob_char_len];
+    const glob_codepoint = Utf8.decode(glob_slice);
+    return .{ .is_match = path_codepoint == glob_codepoint, .path_char_len = path_char_len };
+}
+
+/// Update state after a successful character match
+fn updateStateAfterMatch(
+    state: *State,
+    captures: ?*std.ArrayList(Capture),
+    brace_stack: *BraceStack,
+    glob: []const u8,
+    path_char_len: usize,
+) void {
+    state.endCapture(captures);
+    if (brace_stack.length > 0 and state.glob_index > 0 and glob[state.glob_index - 1] == '}') {
+        brace_stack.longest_brace_match = state.path_index;
+        state.* = brace_stack.pop(state, captures);
+    }
+    state.glob_index += 1;
+    state.path_index += path_char_len;
+
+    // If this is not a separator, lock in the previous globstar
+    if (state.glob_index > 0 and glob[state.glob_index - 1] != '/') {
+        state.globstar.path_index = 0;
+    }
 }
