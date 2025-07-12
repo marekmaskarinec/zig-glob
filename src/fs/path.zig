@@ -320,14 +320,6 @@ pub fn normalizePath(allocator: Allocator, base_dir: []const u8, path: []const u
     // Get the final result
     const final_path = result.toOwnedSlice();
 
-    // Debug info - using a safer approach to avoid formatting error unions
-    //if (builtin.mode == .Debug) {
-    // First print the input parameters
-    //    std.debug.print("normalizePath input: base_dir='{s}', path='{s}'\n", .{ base_dir, path });
-    // Then print the result separately
-    //   std.debug.print("normalizePath output: '{s}'\n", .{ final_path });
-    //}
-
     return final_path;
 }
 
