@@ -374,10 +374,6 @@ fn isExtGlob(glob: []const u8, index: usize) ExtGlobType {
 
     // Check for pattern+(...)
     if (glob[index + 1] == '(') {
-        // Debug log disabled
-        // std.debug.print("isExtGlob: checking {c}( at index {d}\n",
-        //    .{glob[index], index});
-
         return switch (glob[index]) {
             '?' => .ZeroOrOne, // ?(pattern)
             '*' => .ZeroOrMore, // *(pattern)
@@ -476,24 +472,16 @@ fn globMatchInternal(glob: []const u8, path: []const u8, captures: ?*std.ArrayLi
         glob[state.glob_index + 1] == '(')
     {
         is_extglob_negation = true;
-        // std.debug.print("Found extglob negation pattern !(pattern) at index {d}\n", .{state.glob_index});
     }
 
     // If not an extglob negation, check for general negation with leading !
     var negated = false;
     if (!is_extglob_negation) {
         while (state.glob_index < glob.len and glob[state.glob_index] == '!') {
-            // std.debug.print("Found leading ! at index {d}\n", .{state.glob_index});
             negated = !negated;
             state.glob_index += 1;
         }
     }
-
-    // Debug disabled
-    // if (state.glob_index < glob.len) {
-    //     std.debug.print("After leading ! processing: pattern={s}, negated={any}, is_extglob_negation={any}\n",
-    //         .{glob[state.glob_index..], negated, is_extglob_negation});
-    // }
 
     while (state.glob_index < glob.len or state.path_index < path.len) {
         if (state.glob_index < glob.len) {
@@ -1038,14 +1026,6 @@ fn handleExtGlob(
 
     const ext_glob_type = isExtGlob(glob, state.glob_index);
     if (ext_glob_type == .None) return false;
-
-    // Debug logs are disabled
-    // std.debug.print("ExtGlob pattern type: {any}, glob={s}, path={s}, character at index: {c}\n",
-    //     .{ext_glob_type, glob[state.glob_index..], path[state.path_index..], glob[state.glob_index]});
-
-    // // Debug the entire pattern to see if there are issues
-    // std.debug.print("Full pattern: {s}, current index: {d}\n",
-    //     .{glob, state.glob_index});
 
     // We have an extglob pattern, advance past the type indicator
     state.glob_index += 1;

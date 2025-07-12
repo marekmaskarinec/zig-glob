@@ -126,6 +126,22 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
+    // Add extended bash glob pattern tests
+    const match_ext_bash_tests = b.addTest(.{
+        .name = "match-ext-bash-tests",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/match_ext_bash_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zglob", .module = mod },
+            },
+        }),
+    });
+
+    const run_match_ext_bash_tests = b.addRunArtifact(match_ext_bash_tests);
+    test_step.dependOn(&run_match_ext_bash_tests.step);
+
     const run_glob_finder_tests = b.addRunArtifact(glob_finder_tests);
     test_step.dependOn(&run_glob_finder_tests.step);
 
@@ -186,7 +202,14 @@ pub fn build(b: *std.Build) void {
     // Add dedicated step for finder tests
     const finder_test_step = b.step("test-finder", "Run glob finder tests");
     const run_only_finder_tests = b.addRunArtifact(glob_finder_tests);
-    finder_test_step.dependOn(&run_only_finder_tests.step); // Allocator usage example
+    finder_test_step.dependOn(&run_only_finder_tests.step);
+
+    // Add dedicated step for extended bash glob tests
+    const ext_bash_test_step = b.step("test-ext-bash", "Run extended bash glob pattern tests");
+    const run_only_ext_bash_tests = b.addRunArtifact(match_ext_bash_tests);
+    ext_bash_test_step.dependOn(&run_only_ext_bash_tests.step);
+
+    // Allocator usage example
     const allocator_usage_exe = b.addExecutable(.{
         .name = "allocator-usage-example",
         .root_module = b.createModule(.{
