@@ -9,16 +9,6 @@ pub const Capture = struct {
     end: usize,
 };
 
-/// Extended bash glob pattern types
-const ExtGlobType = enum {
-    None, // Not an extglob
-    Negation, // !(pattern) - matches anything except the pattern
-    Optional, // ?(pattern) - matches zero or one occurrence of the pattern
-    ZeroOrMore, // *(pattern) - matches zero or more occurrences of the pattern
-    OneOrMore, // +(pattern) - matches one or more occurrences of the pattern
-    ExactlyOne, // @(pattern) - matches exactly one occurrence of the pattern
-};
-
 pub const MatchGlob = struct {
     allocator: Allocator,
 
@@ -35,44 +25,10 @@ pub const MatchGlob = struct {
 
     /// Match a glob pattern against a path and collect captures
     pub fn matchWithCaptures(self: MatchGlob, glob: []const u8, path: []const u8) ?std.ArrayList(Capture) {
-        // Safety check: Validate that the input lengths don't exceed what we can safely handle
-        if (glob.len > std.math.maxInt(u32) or path.len > std.math.maxInt(u32)) {
-            return null;
-        }
-
-        // Validate that the input is valid UTF-8
-        if (!unicode.utf8ValidateSlice(glob) or !unicode.utf8ValidateSlice(path)) {
-            return null;
-        }
-
-        var captures = std.ArrayList(Capture).init(self.allocator);
-        if (globMatchInternal(glob, path, &captures)) {
-            return captures;
-        }
-        captures.deinit();
-        return null;
+        return globMatchWithCaptures(glob, path, self.allocator);
     }
 };
 
-/// Match a glob pattern against a path and collect captures
-pub fn globMatchWithCaptures(glob: []const u8, path: []const u8, allocator: Allocator) ?std.ArrayList(Capture) {
-    // Safety check: Validate that the input lengths don't exceed what we can safely handle
-    if (glob.len > std.math.maxInt(u32) or path.len > std.math.maxInt(u32)) {
-        return null;
-    }
-
-    // Validate that the input is valid UTF-8
-    if (!unicode.utf8ValidateSlice(glob) or !unicode.utf8ValidateSlice(path)) {
-        return null;
-    }
-
-    var captures = std.ArrayList(Capture).init(allocator);
-    if (globMatchInternal(glob, path, &captures)) {
-        return captures;
-    }
-    captures.deinit();
-    return null;
-}
 /// UTF-8 utility functions
 const Utf8 = struct {
     /// Get the byte length of a UTF-8 code point
@@ -120,13 +76,6 @@ const State = struct {
     wildcard: Wildcard,
     globstar: Wildcard,
 
-    // For tracking the current extglob pattern being processed
-    in_extglob: bool,
-    extglob_type: ExtGlobType,
-    extglob_pattern_start: usize,
-    extglob_pattern_end: usize,
-    extglob_matches_count: usize,
-
     fn init() State {
         return .{
             .path_index = 0,
@@ -134,11 +83,6 @@ const State = struct {
             .capture_index = 0,
             .wildcard = Wildcard.init(),
             .globstar = Wildcard.init(),
-            .in_extglob = false,
-            .extglob_type = .None,
-            .extglob_pattern_start = 0,
-            .extglob_pattern_end = 0,
-            .extglob_matches_count = 0,
         };
     }
 
@@ -268,62 +212,6 @@ const Wildcard = struct {
     }
 };
 
-/// State for an extended bash glob pattern
-const ExtGlobState = struct {
-    type: ExtGlobType,
-    start_index: usize, // Index where pattern starts
-    end_index: usize, // Index where pattern ends
-    pattern_start: usize, // Start index of the pattern inside parentheses
-    matches_count: usize, // Number of times pattern has matched
-    alternation: bool, // Whether this pattern uses alternation (|)
-
-    fn init() ExtGlobState {
-        return .{
-            .type = .None,
-            .start_index = 0,
-            .end_index = 0,
-            .pattern_start = 0,
-            .matches_count = 0,
-            .alternation = false,
-        };
-    }
-};
-
-/// Maximum allowed depth for extglob nesting to prevent stack overflows
-const MAX_EXTGLOB_NESTING = 10;
-
-/// Stack for tracking extglob patterns
-const ExtGlobStack = struct {
-    stack: [MAX_EXTGLOB_NESTING]ExtGlobState,
-    length: u32,
-
-    fn init() ExtGlobStack {
-        return .{
-            .stack = undefined,
-            .length = 0,
-        };
-    }
-
-    fn push(self: *ExtGlobStack, ext_glob: ExtGlobState) !void {
-        if (self.length >= MAX_EXTGLOB_NESTING) {
-            return error.TooManyNestedExtglobs;
-        }
-        self.stack[@as(usize, self.length)] = ext_glob;
-        self.length += 1;
-    }
-
-    fn pop(self: *ExtGlobStack) ?ExtGlobState {
-        if (self.length == 0) return null;
-        self.length -= 1;
-        return self.stack[@as(usize, self.length)];
-    }
-
-    fn current(self: *ExtGlobStack) ?*ExtGlobState {
-        if (self.length == 0) return null;
-        return &self.stack[@as(usize, self.length) - 1];
-    }
-};
-
 /// Possible states when processing braces
 const BraceState = enum {
     Invalid,
@@ -361,11 +249,6 @@ const BraceStack = struct {
             .capture_index = state.capture_index + 1,
             .wildcard = Wildcard.init(),
             .globstar = Wildcard.init(),
-            .in_extglob = state.in_extglob,
-            .extglob_type = state.extglob_type,
-            .extglob_pattern_start = state.extglob_pattern_start,
-            .extglob_pattern_end = state.extglob_pattern_end,
-            .extglob_matches_count = state.extglob_matches_count,
         };
     }
 
@@ -377,11 +260,6 @@ const BraceStack = struct {
             .wildcard = self.stack[@as(usize, self.length)].wildcard,
             .globstar = self.stack[@as(usize, self.length)].globstar,
             .capture_index = self.stack[@as(usize, self.length)].capture_index,
-            .in_extglob = state.in_extglob,
-            .extglob_type = state.extglob_type,
-            .extglob_pattern_start = state.extglob_pattern_start,
-            .extglob_pattern_end = state.extglob_pattern_end,
-            .extglob_matches_count = state.extglob_matches_count,
         };
 
         if (self.length == 0) {
@@ -446,76 +324,6 @@ fn isSeparator(c: u8) bool {
     };
 }
 
-/// Determine if the current position in the glob pattern is an extglob pattern start
-/// Returns the type of extglob pattern or None if it's not an extglob
-fn detectExtGlobType(glob: []const u8, index: usize) ExtGlobType {
-    if (index + 2 >= glob.len) return .None;
-
-    if (glob[index + 1] == '(') {
-        return switch (glob[index]) {
-            '!' => .Negation, // !(pattern)
-            '?' => .Optional, // ?(pattern)
-            '*' => .ZeroOrMore, // *(pattern)
-            '+' => .OneOrMore, // +(pattern)
-            '@' => .ExactlyOne, // @(pattern)
-            else => .None,
-        };
-    }
-
-    return .None;
-}
-
-/// Find the matching closing parenthesis for an extglob pattern
-/// Returns the index of the closing parenthesis or glob.len if not found
-fn findExtGlobEnd(glob: []const u8, start_index: usize) usize {
-    var depth: usize = 1;
-    var i: usize = start_index + 2; // Skip the operator and opening parenthesis
-    var in_bracket: bool = false;
-
-    while (i < glob.len) : (i += 1) {
-        const c = glob[i];
-
-        if (in_bracket) {
-            if (c == ']') {
-                in_bracket = false;
-            }
-            continue;
-        }
-
-        switch (c) {
-            '\\' => {
-                // Skip the escaped character
-                if (i + 1 < glob.len) {
-                    i += 1;
-                }
-            },
-            '[' => {
-                in_bracket = true;
-            },
-            '(' => {
-                // Handle nested patterns
-                if (i > 0 and (glob[i - 1] == '!' or
-                    glob[i - 1] == '?' or
-                    glob[i - 1] == '*' or
-                    glob[i - 1] == '+' or
-                    glob[i - 1] == '@'))
-                {
-                    depth += 1;
-                }
-            },
-            ')' => {
-                depth -= 1;
-                if (depth == 0) {
-                    return i;
-                }
-            },
-            else => {},
-        }
-    }
-
-    return glob.len; // No matching closing parenthesis found
-}
-
 /// Match a glob pattern against a path
 pub fn globMatch(glob: []const u8, path: []const u8) bool {
     // Safety check: Validate that the input lengths don't exceed what we can safely handle
@@ -527,70 +335,27 @@ pub fn globMatch(glob: []const u8, path: []const u8) bool {
     if (!unicode.utf8ValidateSlice(glob) or !unicode.utf8ValidateSlice(path)) {
         return false;
     }
-
-    // Handle specific test cases from glob_extbash_tests.zig
-    // This is a temporary solution to make the tests pass while proper implementation is developed
-
-    // Test cases for negation pattern !(...)
-    if (mem.eql(u8, glob, "!(abc)")) {
-        return !mem.eql(u8, path, "abc");
-    }
-    if (mem.eql(u8, glob, "a!(b)c")) {
-        return mem.eql(u8, path, "adc") or mem.eql(u8, path, "aac") or !mem.eql(u8, path, "abc");
-    }
-
-    // Test cases for optional pattern ?(...)
-    if (mem.eql(u8, glob, "?(abc)")) {
-        return path.len == 0 or mem.eql(u8, path, "abc");
-    }
-    if (mem.eql(u8, glob, "a?(b)c")) {
-        return mem.eql(u8, path, "ac") or mem.eql(u8, path, "abc");
-    }
-
-    // Test cases for zero or more pattern *(...)
-    if (mem.eql(u8, glob, "*(abc)")) {
-        return path.len == 0 or mem.eql(u8, path, "abc") or mem.eql(u8, path, "abcabc") or mem.eql(u8, path, "abcabcabc");
-    }
-    if (mem.eql(u8, glob, "a*(b)c")) {
-        return mem.eql(u8, path, "ac") or mem.eql(u8, path, "abc") or mem.eql(u8, path, "abbc") or mem.eql(u8, path, "abbbc");
-    }
-
-    // Test cases for one or more pattern +(...)
-    if (mem.eql(u8, glob, "+(abc)")) {
-        return mem.eql(u8, path, "abc") or mem.eql(u8, path, "abcabc") or mem.eql(u8, path, "abcabcabc");
-    }
-    if (mem.eql(u8, glob, "a+(b)c")) {
-        return mem.eql(u8, path, "abc") or mem.eql(u8, path, "abbc") or mem.eql(u8, path, "abbbc");
-    }
-
-    // Test cases for exactly one pattern @(...)
-    if (mem.eql(u8, glob, "@(abc)")) {
-        return mem.eql(u8, path, "abc");
-    }
-    if (mem.eql(u8, glob, "a@(b)c")) {
-        return mem.eql(u8, path, "abc");
-    }
-
-    // Test cases for alternations
-    if (mem.eql(u8, glob, "@(abc|def)")) {
-        return mem.eql(u8, path, "abc") or mem.eql(u8, path, "def");
-    }
-    if (mem.eql(u8, glob, "!(abc|def)")) {
-        return !mem.eql(u8, path, "abc") and !mem.eql(u8, path, "def");
-    }
-    if (mem.eql(u8, glob, "?(abc|def)")) {
-        return path.len == 0 or mem.eql(u8, path, "abc") or mem.eql(u8, path, "def");
-    }
-
-    // Test cases for wildcards with extglobs
-    if (mem.eql(u8, glob, "a!(b*)c")) {
-        return mem.eql(u8, path, "adc") or mem.eql(u8, path, "aac");
-    }
-    if (mem.eql(u8, glob, "a+(b*)c")) {
-        return mem.eql(u8, path, "abbc") or mem.eql(u8, path, "abbbc") or mem.eql(u8, path, "abxc") or mem.eql(u8, path, "abxybzc");
-    }
-
     return globMatchInternal(glob, path, null);
+}
+
+/// Match a glob pattern against a path and collect captures
+pub fn globMatchWithCaptures(glob: []const u8, path: []const u8, allocator: Allocator) ?std.ArrayList(Capture) {
+    // Safety check: Validate that the input lengths don't exceed what we can safely handle
+    if (glob.len > std.math.maxInt(u32) or path.len > std.math.maxInt(u32)) {
+        return null;
+    }
+
+    // Validate that the input is valid UTF-8
+    if (!unicode.utf8ValidateSlice(glob) or !unicode.utf8ValidateSlice(path)) {
+        return null;
+    }
+
+    var captures = std.ArrayList(Capture).init(allocator);
+    if (globMatchInternal(glob, path, &captures)) {
+        return captures;
+    }
+    captures.deinit();
+    return null;
 }
 
 /// Maximum number of captures to prevent potential DoS issues with patterns like "*********"
@@ -617,416 +382,6 @@ fn globMatchInternal(glob: []const u8, path: []const u8, captures: ?*std.ArrayLi
     while (state.glob_index < glob.len or state.path_index < path.len) {
         if (state.glob_index < glob.len) {
             const c = glob[state.glob_index];
-
-            // Check for extended bash patterns
-            const ext_glob_type = detectExtGlobType(glob, state.glob_index);
-            if (ext_glob_type != .None) {
-                // We found an extglob pattern
-                const pattern_start = state.glob_index + 2; // Skip the operator and opening parenthesis
-                const pattern_end = findExtGlobEnd(glob, state.glob_index);
-
-                if (pattern_end >= glob.len) {
-                    // Invalid pattern - no closing parenthesis
-                    return false;
-                }
-
-                // Process the extglob pattern based on its type
-                var pattern_matched = false;
-                const save_path_index = state.path_index;
-
-                // Find alternations (|) in the pattern
-                var has_alternation = false;
-                var alt_depth: usize = 0;
-                var i = pattern_start;
-                while (i < pattern_end) : (i += 1) {
-                    switch (glob[i]) {
-                        '\\' => {
-                            if (i + 1 < pattern_end) i += 1; // Skip escaped character
-                        },
-                        '(' => alt_depth += 1,
-                        ')' => {
-                            if (alt_depth > 0) alt_depth -= 1;
-                        },
-                        '|' => {
-                            if (alt_depth == 0) {
-                                has_alternation = true;
-                                break;
-                            }
-                        },
-                        else => {},
-                    }
-                }
-
-                // Handle different extglob types
-                switch (ext_glob_type) {
-                    .Negation => {
-                        // !(pattern) - matches anything except the pattern
-                        if (has_alternation) {
-                            // Handle alternation - split by |
-                            var alt_start = pattern_start;
-                            var matched_any = false;
-
-                            i = pattern_start;
-                            alt_depth = 0;
-                            while (i < pattern_end) : (i += 1) {
-                                switch (glob[i]) {
-                                    '\\' => {
-                                        if (i + 1 < pattern_end) i += 1;
-                                    },
-                                    '(' => alt_depth += 1,
-                                    ')' => {
-                                        if (alt_depth > 0) alt_depth -= 1;
-                                    },
-                                    '|' => {
-                                        if (alt_depth == 0) {
-                                            // Try to match this alternative
-                                            state.path_index = save_path_index;
-                                            const alt_pattern = glob[alt_start..i];
-                                            if (globMatchInternal(alt_pattern, path[state.path_index..], captures)) {
-                                                matched_any = true;
-                                                break;
-                                            }
-                                            alt_start = i + 1;
-                                        }
-                                    },
-                                    else => {},
-                                }
-                            }
-
-                            // Check the last alternative
-                            if (!matched_any and alt_start < pattern_end) {
-                                state.path_index = save_path_index;
-                                const alt_pattern = glob[alt_start..pattern_end];
-                                if (globMatchInternal(alt_pattern, path[state.path_index..], captures)) {
-                                    matched_any = true;
-                                }
-                            }
-
-                            pattern_matched = !matched_any;
-                        } else {
-                            // No alternation - simple negation
-                            const sub_pattern = glob[pattern_start..pattern_end];
-                            const matched = globMatchInternal(sub_pattern, path[save_path_index..], captures);
-                            pattern_matched = !matched;
-                        }
-                    },
-                    .Optional => {
-                        // ?(pattern) - matches zero or one occurrence of the pattern
-                        // Try with zero occurrences first (always matches)
-                        pattern_matched = true;
-
-                        // Then try with one occurrence
-                        if (has_alternation) {
-                            // Handle alternation
-                            var alt_start = pattern_start;
-                            var alt_matched = false;
-
-                            i = pattern_start;
-                            alt_depth = 0;
-                            while (i < pattern_end and !alt_matched) : (i += 1) {
-                                switch (glob[i]) {
-                                    '\\' => {
-                                        if (i + 1 < pattern_end) i += 1;
-                                    },
-                                    '(' => alt_depth += 1,
-                                    ')' => {
-                                        if (alt_depth > 0) alt_depth -= 1;
-                                    },
-                                    '|' => {
-                                        if (alt_depth == 0) {
-                                            // Try to match this alternative
-                                            state.path_index = save_path_index;
-                                            const alt_pattern = glob[alt_start..i];
-                                            if (globMatchInternal(alt_pattern, path[state.path_index..], null)) {
-                                                alt_matched = true;
-                                                break;
-                                            }
-                                            alt_start = i + 1;
-                                        }
-                                    },
-                                    else => {},
-                                }
-                            }
-
-                            // Check the last alternative
-                            if (!alt_matched and alt_start < pattern_end) {
-                                state.path_index = save_path_index;
-                                const alt_pattern = glob[alt_start..pattern_end];
-                                alt_matched = globMatchInternal(alt_pattern, path[state.path_index..], null);
-                            }
-
-                            if (alt_matched) {
-                                // One occurrence matched - consume the characters
-                                pattern_matched = true;
-                            }
-                        } else {
-                            // No alternation - try to match once
-                            state.path_index = save_path_index;
-                            const sub_pattern = glob[pattern_start..pattern_end];
-                            if (globMatchInternal(sub_pattern, path[state.path_index..], null)) {
-                                // Matched once - consume the matched characters
-                                // The exact consumption length depends on what was matched
-                                pattern_matched = true;
-                            }
-                        }
-                    },
-                    .ZeroOrMore => {
-                        // *(pattern) - matches zero or more occurrences of the pattern
-                        // Zero occurrences always matches
-                        pattern_matched = true;
-
-                        if (has_alternation) {
-                            // With alternation, try each alternative repeatedly
-                            var progress_made = true;
-                            var saved_path_index = save_path_index;
-
-                            // Keep trying alternatives as long as we're making progress
-                            while (progress_made and state.path_index < path.len) {
-                                progress_made = false;
-
-                                // Try each alternative
-                                var alt_start = pattern_start;
-                                i = pattern_start;
-                                alt_depth = 0;
-
-                                while (i < pattern_end) : (i += 1) {
-                                    switch (glob[i]) {
-                                        '\\' => {
-                                            if (i + 1 < pattern_end) i += 1;
-                                        },
-                                        '(' => alt_depth += 1,
-                                        ')' => {
-                                            if (alt_depth > 0) alt_depth -= 1;
-                                        },
-                                        '|' => {
-                                            if (alt_depth == 0) {
-                                                // Try to match this alternative
-                                                const alt_pattern = glob[alt_start..i];
-                                                const before = state.path_index;
-                                                if (globMatchInternal(alt_pattern, path[state.path_index..], null) and
-                                                    state.path_index > before)
-                                                {
-                                                    progress_made = true;
-                                                    saved_path_index = state.path_index;
-                                                    break;
-                                                }
-                                                alt_start = i + 1;
-                                            }
-                                        },
-                                        else => {},
-                                    }
-                                }
-
-                                // Check the last alternative
-                                if (!progress_made and alt_start < pattern_end) {
-                                    const alt_pattern = glob[alt_start..pattern_end];
-                                    const before = state.path_index;
-                                    if (globMatchInternal(alt_pattern, path[state.path_index..], null) and
-                                        state.path_index > before)
-                                    {
-                                        progress_made = true;
-                                        saved_path_index = state.path_index;
-                                    }
-                                }
-                            }
-
-                            state.path_index = saved_path_index;
-                        } else {
-                            // No alternation - try to match as many times as possible
-                            var progress_made = true;
-                            var saved_path_index = save_path_index;
-
-                            while (progress_made and state.path_index < path.len) {
-                                const sub_pattern = glob[pattern_start..pattern_end];
-                                const before = state.path_index;
-                                if (globMatchInternal(sub_pattern, path[state.path_index..], null) and
-                                    state.path_index > before)
-                                {
-                                    saved_path_index = state.path_index;
-                                } else {
-                                    progress_made = false;
-                                }
-                            }
-
-                            state.path_index = saved_path_index;
-                        }
-                    },
-                    .OneOrMore => {
-                        // +(pattern) - matches one or more occurrences of the pattern
-                        var matched_at_least_once = false;
-
-                        if (has_alternation) {
-                            // With alternation, try each alternative repeatedly
-                            var progress_made = true;
-                            var saved_path_index = save_path_index;
-
-                            // Need to match at least once
-                            while (progress_made and state.path_index < path.len) {
-                                progress_made = false;
-
-                                // Try each alternative
-                                var alt_start = pattern_start;
-                                i = pattern_start;
-                                alt_depth = 0;
-
-                                while (i < pattern_end) : (i += 1) {
-                                    switch (glob[i]) {
-                                        '\\' => {
-                                            if (i + 1 < pattern_end) i += 1;
-                                        },
-                                        '(' => alt_depth += 1,
-                                        ')' => {
-                                            if (alt_depth > 0) alt_depth -= 1;
-                                        },
-                                        '|' => {
-                                            if (alt_depth == 0) {
-                                                // Try to match this alternative
-                                                const alt_pattern = glob[alt_start..i];
-                                                const before = state.path_index;
-                                                if (globMatchInternal(alt_pattern, path[state.path_index..], null) and
-                                                    state.path_index > before)
-                                                {
-                                                    progress_made = true;
-                                                    matched_at_least_once = true;
-                                                    saved_path_index = state.path_index;
-                                                    break;
-                                                }
-                                                alt_start = i + 1;
-                                            }
-                                        },
-                                        else => {},
-                                    }
-                                }
-
-                                // Check the last alternative
-                                if (!progress_made and alt_start < pattern_end) {
-                                    const alt_pattern = glob[alt_start..pattern_end];
-                                    const before = state.path_index;
-                                    if (globMatchInternal(alt_pattern, path[state.path_index..], null) and
-                                        state.path_index > before)
-                                    {
-                                        progress_made = true;
-                                        matched_at_least_once = true;
-                                        saved_path_index = state.path_index;
-                                    }
-                                }
-                            }
-
-                            state.path_index = saved_path_index;
-                        } else {
-                            // No alternation - must match at least once
-                            var progress_made = true;
-                            var saved_path_index = save_path_index;
-
-                            while (progress_made and state.path_index < path.len) {
-                                const sub_pattern = glob[pattern_start..pattern_end];
-                                const before = state.path_index;
-                                if (globMatchInternal(sub_pattern, path[state.path_index..], null) and
-                                    state.path_index > before)
-                                {
-                                    matched_at_least_once = true;
-                                    saved_path_index = state.path_index;
-                                } else {
-                                    progress_made = false;
-                                }
-                            }
-
-                            state.path_index = saved_path_index;
-                        }
-
-                        pattern_matched = matched_at_least_once;
-                    },
-                    .ExactlyOne => {
-                        // @(pattern) - matches exactly one occurrence of the pattern
-                        if (has_alternation) {
-                            // Handle alternation - match one alternative exactly once
-                            var alt_start = pattern_start;
-                            i = pattern_start;
-                            alt_depth = 0;
-
-                            while (i < pattern_end and !pattern_matched) : (i += 1) {
-                                switch (glob[i]) {
-                                    '\\' => {
-                                        if (i + 1 < pattern_end) i += 1;
-                                    },
-                                    '(' => alt_depth += 1,
-                                    ')' => {
-                                        if (alt_depth > 0) alt_depth -= 1;
-                                    },
-                                    '|' => {
-                                        if (alt_depth == 0) {
-                                            // Try to match this alternative
-                                            state.path_index = save_path_index;
-                                            const alt_pattern = glob[alt_start..i];
-                                            const before = state.path_index;
-                                            if (globMatchInternal(alt_pattern, path[state.path_index..], null) and
-                                                state.path_index > before)
-                                            {
-                                                pattern_matched = true;
-                                                break;
-                                            }
-                                            alt_start = i + 1;
-                                        }
-                                    },
-                                    else => {},
-                                }
-                            }
-
-                            // Check the last alternative if we haven't matched yet
-                            if (!pattern_matched and alt_start < pattern_end) {
-                                state.path_index = save_path_index;
-                                const alt_pattern = glob[alt_start..pattern_end];
-                                const before = state.path_index;
-                                pattern_matched = globMatchInternal(alt_pattern, path[state.path_index..], null) and
-                                    state.path_index > before;
-                            }
-                        } else {
-                            // No alternation - match the pattern exactly once
-                            state.path_index = save_path_index;
-                            const sub_pattern = glob[pattern_start..pattern_end];
-                            const before = state.path_index;
-                            pattern_matched = globMatchInternal(sub_pattern, path[state.path_index..], null) and
-                                state.path_index > before;
-                        }
-                    },
-                    .None => unreachable, // We already checked that it's not None
-                }
-
-                // If the pattern didn't match, restore the state
-                if (!pattern_matched) {
-                    state.path_index = save_path_index;
-                }
-
-                // Skip past the entire extglob pattern
-                state.glob_index = pattern_end + 1; // Skip past the closing parenthesis
-
-                if (!pattern_matched) {
-                    // If the extglob didn't match, check for wildcard fallback
-                    if (state.wildcard.path_index > 0 and state.wildcard.path_index <= path.len) {
-                        state.backtrack();
-                        continue;
-                    }
-
-                    // Otherwise, check for brace fallback
-                    if (brace_stack.length > 0) {
-                        // Try next brace alternative
-                        const brace_state = state.skipBraces(glob, captures, true);
-                        switch (brace_state) {
-                            .Invalid => return false,
-                            .Comma => {
-                                state.path_index = brace_stack.last().path_index;
-                                continue;
-                            },
-                            .EndBrace => {},
-                        }
-                    }
-
-                    return negated;
-                }
-
-                continue;
-            }
-
             switch (c) {
                 '*' => {
                     const is_globstar = state.glob_index + 1 < glob.len and glob[state.glob_index + 1] == '*';
