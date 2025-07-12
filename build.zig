@@ -73,17 +73,6 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    const glob_safety_tests = b.addTest(.{
-        .name = "glob-safety-tests",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/glob_safety_tests.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "zglob", .module = mod },
-            },
-        }),
-    });
 
     const fs_tests = b.addTest(.{
         .name = "fs-tests",
@@ -97,11 +86,20 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
-    // Allocator examples have been moved to examples directory
-
-    // Global allocator tests have been removed
-
     const test_step = b.step("test", "Run all tests");
+    const glob_safety_tests = b.addTest(.{
+        .name = "glob-safety-tests",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/glob_safety_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zglob", .module = mod },
+            },
+        }),
+    });
+    const run_glob_safety_tests = b.addRunArtifact(glob_safety_tests);
+    test_step.dependOn(&run_glob_safety_tests.step);
 
     const run_mod_tests = b.addRunArtifact(mod_unit_tests);
     test_step.dependOn(&run_mod_tests.step);
@@ -141,12 +139,23 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-
     const run_path_tests = b.addRunArtifact(path_tests);
     test_step.dependOn(&run_path_tests.step);
 
-    const run_glob_safety_tests = b.addRunArtifact(glob_safety_tests);
-    test_step.dependOn(&run_glob_safety_tests.step);
+    const ext_bash_test = b.addTest(.{
+        .name = "match-extbash",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/glob_extbash_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zglob", .module = mod },
+            },
+        }),
+    });
+
+    const run_ext_bash_test = b.addRunArtifact(ext_bash_test);
+    test_step.dependOn(&run_ext_bash_test.step);
 
     const run_fs_tests = b.addRunArtifact(fs_tests);
     test_step.dependOn(&run_fs_tests.step);
@@ -186,7 +195,14 @@ pub fn build(b: *std.Build) void {
     // Add dedicated step for finder tests
     const finder_test_step = b.step("test-finder", "Run glob finder tests");
     const run_only_finder_tests = b.addRunArtifact(glob_finder_tests);
-    finder_test_step.dependOn(&run_only_finder_tests.step); // Allocator usage example
+    finder_test_step.dependOn(&run_only_finder_tests.step);
+
+    // Add dedicated step for extbash tests
+    const extbash_test_step = b.step("test-extbash", "Run extended bash pattern matching tests");
+    const run_only_extbash_tests = b.addRunArtifact(ext_bash_test);
+    extbash_test_step.dependOn(&run_only_extbash_tests.step);
+
+    // Allocator usage example
     const allocator_usage_exe = b.addExecutable(.{
         .name = "allocator-usage-example",
         .root_module = b.createModule(.{
