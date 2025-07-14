@@ -12,8 +12,10 @@ test "basic fs module functionality" {
 
     try testing.expect(cwd.len > 0);
 
-    // Try the build.zig file which we know exists
-    const build_zig_path = "/home/pierre/project/javascript/bun-glob/port-rust-glob/zglob/build.zig";
+    // The cwd appears to be the project root already, so we don't need to go up a level
+    const build_zig_path = try std.fs.path.join(testing.allocator, &[_][]const u8{ cwd, "build.zig" });
+    defer testing.allocator.free(build_zig_path);
+
     const exists = fs.fileExists(build_zig_path);
     try testing.expect(exists);
 }
@@ -29,7 +31,10 @@ test "zGlob object-oriented approach" {
     try testing.expect(cwd.len > 0);
 
     // Check if build.zig exists using the fs field
-    const build_zig_path = "/home/pierre/project/javascript/bun-glob/port-rust-glob/zglob/build.zig";
+    // The cwd appears to be the project root already
+    const build_zig_path = try std.fs.path.join(testing.allocator, &[_][]const u8{ cwd, "build.zig" });
+    defer testing.allocator.free(build_zig_path);
+
     const exists = glob.fs.fileExists(build_zig_path);
     try testing.expect(exists);
 
@@ -57,7 +62,10 @@ test "accessing fs through zGlob struct" {
     try testing.expect(cwd.len > 0);
 
     // Use other fs functionality
-    const build_zig_path = "/home/pierre/project/javascript/bun-glob/port-rust-glob/zglob/build.zig";
+    // The cwd appears to be the project root already
+    const build_zig_path = try std.fs.path.join(testing.allocator, &[_][]const u8{ cwd, "build.zig" });
+    defer testing.allocator.free(build_zig_path);
+
     const exists = glob.fs.fileExists(build_zig_path);
     try testing.expect(exists);
 
