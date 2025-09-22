@@ -34,7 +34,7 @@ pub const MatchGlob = struct {
     }
 
     /// Match a glob pattern against a path and collect captures
-    pub fn matchWithCaptures(self: MatchGlob, glob: []const u8, path: []const u8) ?std.ArrayList(Capture) {
+    pub fn matchWithCaptures(self: MatchGlob, glob: []const u8, path: []const u8) ?std.array_list.Managed(Capture) {
         return globMatchWithCaptures(glob, path, self.allocator);
     }
 };
@@ -102,7 +102,7 @@ const State = struct {
         self.capture_index = self.wildcard.capture_index;
     }
 
-    fn beginCapture(self: *const State, captures: ?*std.ArrayList(Capture), capture: Capture) void {
+    fn beginCapture(self: *const State, captures: ?*std.array_list.Managed(Capture), capture: Capture) void {
         if (captures) |c| {
             const idx = @as(usize, self.capture_index);
             if (idx < c.items.len) {
@@ -115,7 +115,7 @@ const State = struct {
         }
     }
 
-    fn extendCapture(self: *const State, captures: ?*std.ArrayList(Capture)) void {
+    fn extendCapture(self: *const State, captures: ?*std.array_list.Managed(Capture)) void {
         if (captures) |c| {
             const idx = @as(usize, self.capture_index);
             if (idx < c.items.len) {
@@ -124,7 +124,7 @@ const State = struct {
         }
     }
 
-    fn endCapture(self: *State, captures: ?*std.ArrayList(Capture)) void {
+    fn endCapture(self: *State, captures: ?*std.array_list.Managed(Capture)) void {
         if (captures) |c| {
             const idx = @as(usize, self.capture_index);
             if (idx < c.items.len) {
@@ -133,7 +133,7 @@ const State = struct {
         }
     }
 
-    fn addCharCapture(self: *State, captures: ?*std.ArrayList(Capture), path: []const u8) void {
+    fn addCharCapture(self: *State, captures: ?*std.array_list.Managed(Capture), path: []const u8) void {
         const char_len = if (self.path_index < path.len) Utf8.codepointLen(path[self.path_index]) else 1;
         self.beginCapture(captures, .{ .start = self.path_index, .end = self.path_index + char_len });
         self.endCapture(captures);
@@ -142,7 +142,7 @@ const State = struct {
     fn skipBraces(
         self: *State,
         glob: []const u8,
-        captures: ?*std.ArrayList(Capture),
+        captures: ?*std.array_list.Managed(Capture),
         stop_on_comma: bool,
     ) BraceState {
         var braces: usize = 1;
@@ -259,7 +259,7 @@ const BraceStack = struct {
         };
     }
 
-    fn pop(self: *BraceStack, state: *const State, captures: ?*std.ArrayList(Capture)) State {
+    fn pop(self: *BraceStack, state: *const State, captures: ?*std.array_list.Managed(Capture)) State {
         self.length -= 1;
         var new_state = State{
             .path_index = self.longest_brace_match,
@@ -346,7 +346,7 @@ pub fn globMatch(glob: []const u8, path: []const u8) bool {
 }
 
 /// Match a glob pattern against a path and collect captures
-pub fn globMatchWithCaptures(glob: []const u8, path: []const u8, allocator: Allocator) ?std.ArrayList(Capture) {
+pub fn globMatchWithCaptures(glob: []const u8, path: []const u8, allocator: Allocator) ?std.array_list.Managed(Capture) {
     // Safety check: Validate that the input lengths don't exceed what we can safely handle
     if (glob.len > std.math.maxInt(u32) or path.len > std.math.maxInt(u32)) {
         return null;
@@ -357,7 +357,7 @@ pub fn globMatchWithCaptures(glob: []const u8, path: []const u8, allocator: Allo
         return null;
     }
 
-    var captures = std.ArrayList(Capture).init(allocator);
+    var captures = std.array_list.Managed(Capture).init(allocator);
     if (globMatchInternal(glob, path, &captures)) {
         return captures;
     }
@@ -419,8 +419,8 @@ const Alternative = struct {
 };
 
 /// Split a pattern by alternation characters (|) while respecting nested parentheses
-fn splitByAlternation(pattern: []const u8) std.ArrayList(Alternative) {
-    var result = std.ArrayList(Alternative).init(std.heap.page_allocator);
+fn splitByAlternation(pattern: []const u8) std.array_list.Managed(Alternative) {
+    var result = std.array_list.Managed(Alternative).init(std.heap.page_allocator);
     var alt_start: usize = 0;
     var depth: usize = 0;
     var i: usize = 0;
@@ -456,7 +456,7 @@ fn splitByAlternation(pattern: []const u8) std.ArrayList(Alternative) {
 }
 
 /// Internal implementation of glob matching
-fn globMatchInternal(glob: []const u8, path: []const u8, captures: ?*std.ArrayList(Capture)) bool {
+fn globMatchInternal(glob: []const u8, path: []const u8, captures: ?*std.array_list.Managed(Capture)) bool {
     // Additional safety check for internal state management
     if (glob.len > std.math.maxInt(u32) or path.len > std.math.maxInt(u32)) {
         return false;
@@ -613,7 +613,7 @@ fn handleAsterisk(
     state: *State,
     glob: []const u8,
     path: []const u8,
-    captures: ?*std.ArrayList(Capture),
+    captures: ?*std.array_list.Managed(Capture),
     brace_stack: *BraceStack,
 ) bool {
     const is_globstar = state.glob_index + 1 < glob.len and glob[state.glob_index + 1] == '*';
@@ -699,7 +699,7 @@ fn handleAsterisk(
 fn handleQuestionMark(
     state: *State,
     path: []const u8,
-    captures: ?*std.ArrayList(Capture),
+    captures: ?*std.array_list.Managed(Capture),
 ) bool {
     if (state.path_index < path.len) {
         if (!isSeparator(path[state.path_index])) {
@@ -717,7 +717,7 @@ fn handleCharacterClass(
     state: *State,
     glob: []const u8,
     path: []const u8,
-    captures: ?*std.ArrayList(Capture),
+    captures: ?*std.array_list.Managed(Capture),
 ) bool {
     if (state.path_index < path.len) {
         state.glob_index += 1;
@@ -817,7 +817,7 @@ fn handleCharacterClass(
 inline fn handleOpenBrace(
     state: *State,
     path: []const u8,
-    captures: ?*std.ArrayList(Capture),
+    captures: ?*std.array_list.Managed(Capture),
     brace_stack: *BraceStack,
 ) bool {
     if (state.path_index < path.len) {
@@ -837,7 +837,7 @@ inline fn handleOpenBrace(
 /// Handle the '}' pattern character (brace expansion) in glob matching
 inline fn handleCloseBrace(
     state: *State,
-    captures: ?*std.ArrayList(Capture),
+    captures: ?*std.array_list.Managed(Capture),
     brace_stack: *BraceStack,
 ) bool {
     if (brace_stack.length > 0) {
@@ -863,7 +863,7 @@ inline fn handleLiteralCharacter(
     state: *State,
     glob: []const u8,
     path: []const u8,
-    captures: ?*std.ArrayList(Capture),
+    captures: ?*std.array_list.Managed(Capture),
     brace_stack: *BraceStack,
 ) bool {
     // Ensure both indices are in bounds
@@ -931,7 +931,7 @@ fn matchCharacter(
 /// Update state after a successful character match
 fn updateStateAfterMatch(
     state: *State,
-    captures: ?*std.ArrayList(Capture),
+    captures: ?*std.array_list.Managed(Capture),
     brace_stack: *BraceStack,
     glob: []const u8,
     path_char_len: usize,
@@ -1015,7 +1015,7 @@ fn handleExtGlob(
     state: *State,
     glob: []const u8,
     path: []const u8,
-    captures: ?*std.ArrayList(Capture),
+    captures: ?*std.array_list.Managed(Capture),
     brace_stack: *BraceStack,
 ) bool {
     // captures are passed to recursive globMatchInternal calls

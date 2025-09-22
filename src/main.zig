@@ -14,8 +14,10 @@ fn dumpPath(path: []const u8) void {
 }
 
 pub fn main() !void {
-    const stdout = std.io.getStdOut().writer();
-    const stderr = std.io.getStdErr().writer();
+    var stdout_buffer: [1024]u8 = undefined;
+    var stderr_buffer: [1024]u8 = undefined;
+    var stdout = std.fs.File.stdout().writer(&stdout_buffer);
+    var stderr = std.fs.File.stderr().writer(&stderr_buffer);
 
     // Create a general purpose allocator as the parent
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -37,9 +39,9 @@ pub fn main() !void {
 
     // Check command line mode
     const first_arg = args.next() orelse {
-        try stderr.writeAll("Usage:\n");
-        try stderr.writeAll("  zglob match <glob_pattern> <path>   - Test if a path matches a pattern\n");
-        try stderr.writeAll("  zglob find <glob_pattern> [path]    - Find files matching a pattern\n");
+        try stderr.interface.writeAll("Usage:\n");
+        try stderr.interface.writeAll("  zglob match <glob_pattern> <path>   - Test if a path matches a pattern\n");
+        try stderr.interface.writeAll("  zglob find <glob_pattern> [path]    - Find files matching a pattern\n");
         return;
     };
 
@@ -50,33 +52,33 @@ pub fn main() !void {
     if (std.mem.eql(u8, first_arg, "match")) {
         // Match mode - test if a path matches a pattern
         const glob_pattern = args.next() orelse {
-            try stderr.writeAll("Usage: zglob match <glob_pattern> <path>\n");
+            try stderr.interface.writeAll("Usage: zglob match <glob_pattern> <path>\n");
             return;
         };
 
         const path = args.next() orelse {
-            try stderr.writeAll("Usage: zglob match <glob_pattern> <path>\n");
+            try stderr.interface.writeAll("Usage: zglob match <glob_pattern> <path>\n");
             return;
         };
 
         const result = zglob.globMatch(glob_pattern, path);
 
-        try stdout.print("Pattern: {s}\nPath: {s}\nResult: {}\n", .{ glob_pattern, path, result });
+        try stdout.interface.print("Pattern: {s}\nPath: {s}\nResult: {}\n", .{ glob_pattern, path, result });
 
         if (result) {
             if (zglob.globMatchWithCaptures(glob_pattern, path, allocator)) |captures| {
                 defer captures.deinit();
 
-                try stdout.print("Captures ({d}):\n", .{captures.items.len});
+                try stdout.interface.print("Captures ({d}):\n", .{captures.items.len});
                 for (captures.items, 0..) |capture, i| {
-                    try stdout.print("  {d}: {s}\n", .{ i, path[capture.start..capture.end] });
+                    try stdout.interface.print("  {d}: {s}\n", .{ i, path[capture.start..capture.end] });
                 }
             }
         }
     } else if (std.mem.eql(u8, first_arg, "find")) {
         // Find mode - find files matching a pattern
         const glob_pattern = args.next() orelse {
-            try stderr.writeAll("Usage: zglob find <glob_pattern> [path]\n");
+            try stderr.interface.writeAll("Usage: zglob find <glob_pattern> [path]\n");
             return;
         };
 
@@ -98,15 +100,15 @@ pub fn main() !void {
             allocator.free(matches);
         }
 
-        try stdout.print("Found {d} matches:\n", .{matches.len});
+        try stdout.interface.print("Found {d} matches:\n", .{matches.len});
         for (matches, 0..) |match_path, i| {
-            try stdout.print("{d}: {s}\n", .{ i + 1, match_path });
+            try stdout.interface.print("{d}: {s}\n", .{ i + 1, match_path });
         }
     } else {
-        try stderr.writeAll("Unknown command. Use 'match' or 'find'.\n");
-        try stderr.writeAll("Usage:\n");
-        try stderr.writeAll("  zglob match <glob_pattern> <path>   - Test if a path matches a pattern\n");
-        try stderr.writeAll("  zglob find <glob_pattern> [path]    - Find files matching a pattern\n");
+        try stderr.interface.writeAll("Unknown command. Use 'match' or 'find'.\n");
+        try stderr.interface.writeAll("Usage:\n");
+        try stderr.interface.writeAll("  zglob match <glob_pattern> <path>   - Test if a path matches a pattern\n");
+        try stderr.interface.writeAll("  zglob find <glob_pattern> [path]    - Find files matching a pattern\n");
     }
 }
 

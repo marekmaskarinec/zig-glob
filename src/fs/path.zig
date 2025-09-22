@@ -155,7 +155,7 @@ pub fn normalizePath(allocator: Allocator, base_dir: []const u8, path: []const u
     }
 
     // Now clean the path by resolving "." and ".." components
-    var parts = std.ArrayList([]const u8).init(allocator);
+    var parts = std.array_list.Managed([]const u8).init(allocator);
     defer parts.deinit();
 
     // First, determine if this is an absolute path for special handling
@@ -231,7 +231,7 @@ pub fn normalizePath(allocator: Allocator, base_dir: []const u8, path: []const u
     }
 
     // Reconstruct the cleaned path
-    var result = std.ArrayList(u8).init(allocator);
+    var result = std.array_list.Managed(u8).init(allocator);
     defer result.deinit();
 
     // Always use forward slashes for cross-platform compatibility in test output

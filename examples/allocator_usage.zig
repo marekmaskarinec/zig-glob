@@ -2,14 +2,15 @@ const std = @import("std");
 const zglob = @import("zglob");
 
 pub fn main() !void {
-    var stdout = std.io.getStdOut().writer();
+    var stdout_buffer: [1024]u8 = undefined;
+    var stdout = std.fs.File.stdout().writer(&stdout_buffer);
 
     // Example 1: Using default page_allocator
     {
         const fs_helper = zglob.fs.Fs.init(std.heap.page_allocator);
         const cwd = try fs_helper.getCwd();
         defer std.heap.page_allocator.free(cwd); // Must free with page_allocator
-        try stdout.print("Example 1 - Default allocator: Current directory: {s}\n", .{cwd});
+        try stdout.interface.print("Example 1 - Default allocator: Current directory: {s}\n", .{cwd});
     }
 
     // Example 2: Using arena allocator (best for short-lived programs)
@@ -22,7 +23,7 @@ pub fn main() !void {
         const cwd = try fs_helper.getCwd();
         // No need to free cwd here - arena.deinit() will free everything at once
 
-        try stdout.print("Example 2 - Arena allocator: Current directory: {s}\n", .{cwd});
+        try stdout.interface.print("Example 2 - Arena allocator: Current directory: {s}\n", .{cwd});
     }
 
     // Example 3: Using a general purpose allocator (best for long-running programs)
@@ -35,12 +36,12 @@ pub fn main() !void {
         const cwd = try fs_helper.getCwd();
         defer allocator.free(cwd);
 
-        try stdout.print("Example 3 - GPA: Current directory: {s}\n", .{cwd});
+        try stdout.interface.print("Example 3 - GPA: Current directory: {s}\n", .{cwd});
     }
 
     // Example 4: Using the zGlob struct with a GPA
     {
-        try stdout.print("\nzGlob examples with different allocators:\n", .{});
+        try stdout.interface.print("\nzGlob examples with different allocators:\n", .{});
 
         var gpa = std.heap.GeneralPurposeAllocator(.{}){};
         defer _ = gpa.deinit();
@@ -51,7 +52,7 @@ pub fn main() !void {
         var glob = zglob.zGlob.init(allocator);
 
         // Use the glob function
-        try stdout.print("Searching for *.zig files in the current directory...\n", .{});
+        try stdout.interface.print("Searching for *.zig files in the current directory...\n", .{});
         const results = try glob.glob("*.zig");
         defer {
             for (results) |path| {
@@ -61,13 +62,13 @@ pub fn main() !void {
         }
 
         for (results) |path| {
-            try stdout.print("Found: {s}\n", .{path});
+            try stdout.interface.print("Found: {s}\n", .{path});
         }
     }
 
     // Example 5: Using the zGlob struct with an arena allocator
     {
-        try stdout.print("\nUsing zGlob with an arena allocator (no manual memory management needed):\n", .{});
+        try stdout.interface.print("\nUsing zGlob with an arena allocator (no manual memory management needed):\n", .{});
 
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer arena.deinit(); // This will free ALL memory at once
@@ -78,12 +79,12 @@ pub fn main() !void {
         var glob = zglob.zGlob.init(allocator);
 
         // Use the glob function
-        try stdout.print("Searching for src/*.zig files...\n", .{});
+        try stdout.interface.print("Searching for src/*.zig files...\n", .{});
         const results = try glob.glob("src/*.zig");
         // No need to free anything manually!
 
         for (results) |path| {
-            try stdout.print("Found: {s}\n", .{path});
+            try stdout.interface.print("Found: {s}\n", .{path});
         }
     }
 }

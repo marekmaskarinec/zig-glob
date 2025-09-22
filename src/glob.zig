@@ -36,7 +36,7 @@ pub const zGlob = struct {
             return error.InvalidPath;
         }
 
-        var matches = std.ArrayList([]const u8).init(self.allocator);
+        var matches = std.array_list.Managed([]const u8).init(self.allocator);
         errdefer {
             for (matches.items) |item| {
                 self.allocator.free(item);
@@ -57,7 +57,7 @@ pub const zGlob = struct {
     /// If recursive is true, will search in subdirectories
     /// If recursive is false, will only search in the immediate directory
     /// This version is a method of zGlob and uses the internal fs field
-    fn walkAndMatchFiles(self: zGlob, base_dir: []const u8, pattern: []const u8, matches: *std.ArrayList([]const u8), recursive: bool) !void {
+    fn walkAndMatchFiles(self: zGlob, base_dir: []const u8, pattern: []const u8, matches: *std.array_list.Managed([]const u8), recursive: bool) !void {
         // Special handling for "." to avoid issues with null-terminated strings
         const dir_path = if (std.mem.eql(u8, base_dir, "."))
             base_dir
@@ -73,7 +73,7 @@ pub const zGlob = struct {
         };
         defer dir_handle.close();
         const has_path_separator = std.mem.indexOfAny(u8, pattern, "/\\") != null;
-        var components = std.ArrayList([]const u8).init(self.allocator);
+        var components = std.array_list.Managed([]const u8).init(self.allocator);
         defer components.deinit();
 
         if (has_path_separator) {
@@ -122,7 +122,7 @@ pub const zGlob = struct {
                     // For path patterns, check if this directory matches the first component
                     if (match.globMatch(components.items[0], entry.name)) {
                         // Recurse with the remaining pattern components
-                        var new_pattern = std.ArrayList(u8).init(self.allocator);
+                        var new_pattern = std.array_list.Managed(u8).init(self.allocator);
                         defer new_pattern.deinit();
 
                         // Skip the first component and build the new pattern
